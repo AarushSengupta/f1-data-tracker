@@ -3,73 +3,80 @@ import matplotlib.pyplot as plt
 import streamlit as st
 from fastf1 import plotting
 
-# 1. Page Config & Styling
-st.set_page_config(page_title="F1 Tire Tracker", layout="wide")
-plotting.setup_mpl(misc_mpl_mods=False)
+# 1. Setup
+st.set_page_config(page_title="F1 Ultimate Tracker", layout="wide")
+plotting.setup_mpl(mpl_timedelta_support=True, misc_mpl_mods=False)
 
-st.title("🏎️ F1 Tire Strategy & Degradation")
+st.title("🏁 F1 Ultimate Data Dashboard")
 
-# 2. Sidebar Dropdowns (The Controls)
+# 2. Sidebar Controls
 st.sidebar.header("Race Settings")
+year = st.sidebar.selectbox("Year", [2026, 2025, 2024], index=1)
+race = st.sidebar.selectbox("Grand Prix", ["Bahrain", "Saudi Arabia", "Australia", "Japan", "Miami", "Monaco", "Silverstone"])
+driver_code = st.sidebar.text_input("Driver Code (e.g. VER, HAM, NOR)", "VER").upper()
 
-# Dropdown for Year
-selected_year = st.sidebar.selectbox("Select Year", [2026, 2025, 2024, 2023])
+# NEW: Metric Selector
+metric = st.sidebar.selectbox("Select Metric to Track", 
+                             ["Tire Strategy", "Lap Times (Pace)", "Pit Stop Durations"])
 
-# Dropdown for Race (Common ones - you can add more!)
-races = ["Bahrain", "Saudi Arabia", "Australia", "Japan", "China", "Miami", "Monaco", "Silverstone", "Monza"]
-selected_race = st.sidebar.selectbox("Select Grand Prix", races)
-
-# Text Input for Driver (3-letter code)
-driver_code = st.sidebar.text_input("Driver Code (e.g. VER, HAM, LEC)", "VER").upper()
-
-# 3. Data Loading Logic
 @st.cache_data
-def load_tire_data(year, race, driver):
+def load_data(y, r, d):
     try:
-        # Load the session
-        session = fastf1.get_session(year, race, 'R')
+        session = fastf1.get_session(y, r, 'R')
         session.load(laps=True, telemetry=False, weather=False)
-        
-        # Filter for the specific driver
-        driver_laps = session.laps.pick_driver(driver)
-        return driver_laps, None
+        laps = session.laps.pick_driver(d)
+        return laps, None
     except Exception as e:
         return None, str(e)
 
-# 4. Main App Interface
-if st.sidebar.button("Update Dashboard"):
-    with st.spinner(f"Downloading {selected_year} {selected_race} data..."):
-        laps, error = load_tire_data(selected_year, selected_race, driver_code)
-
+# 3. Main App Logic
+if st.sidebar.button("Run Analysis"):
+    laps, error = load_data(year, race, driver_code)
+    
     if error:
-        st.error(f"Could not load data: {error}. Note: 2026 data only works for completed races!")
+        st.error(f"Error: {error}")
     elif laps.empty:
-        st.warning(f"No data found for driver {driver_code} in this race.")
+        st.warning(f"No data for {driver_code} in {year} {race}")
     else:
-        # Success! Create the plot
-        st.subheader(f"Strategy for {driver_code} at {selected_race} {selected_year}")
-        
+        st.header(f"{metric}: {driver_code} at {race} {year}")
         fig, ax = plt.subplots(figsize=(12, 6))
-        
-        # Plot each stint with correct F1 colors
-        for stint in laps['Stint'].unique():
-            stint_data = laps[laps['Stint'] == stint]
-            compound = stint_data['Compound'].iloc[0]
-            
-            # Map colors to tires
-            color_map = {'SOFT': 'red', 'MEDIUM': 'yellow', 'HARD': 'white', 'INTERMEDIATE': 'green', 'WET': 'blue'}
-            color = color_map.get(compound, 'gray')
-            
-            ax.plot(stint_data['LapNumber'], stint_data['TyreLife'], 
-                    color=color, label=f"Stint {int(stint)} ({compound})", linewidth=3)
+
+        # --- OPTION 1: TIRE STRATEGY ---
+        if metric == "Tire Strategy":
+            for stint in laps['Stint'].unique():
+                stint_data = laps[laps['Stint'] == stint]
+                compound = stint_data['Compound'].iloc[0]
+                color = {'SOFT': 'red', 'MEDIUM': 'yellow', 'HARD': 'white'}.get(compound, 'cyan')
+                ax.plot(stint_data['LapNumber'], stint_data['TyreLife'], color=color, linewidth=3, label=f"Stint {int(stint)}")
+            ax.set_ylabel("Laps on Tire Set")
+
+        # --- OPTION 2: LAP TIMES ---
+        elif metric == "Lap Times (Pace)":
+            # We use 'pick_quicklaps' to hide slow laps like pit stops or Safety Cars
+            quick_laps = laps.pick_quicklaps()
+            ax.plot(quick_laps['LapNumber'], quick_laps['LapTime'], marker='o', color='magenta', linestyle='--')
+            ax.set_ylabel("Lap Time (Duration)")
+            st.info("💡 Note: Outliers (Pit stops/Safety Cars) are hidden to show true race pace.")
+
+        # --- OPTION 3: PIT STOPS ---
+        elif metric == "Pit Stop Durations":
+            # Filter for laps where the driver actually entered the pits
+            pit_stops = laps[laps['PitInTime'].notna()]
+            if not pit_stops.empty:
+                # We show how long they were in the pit lane
+                ax.bar(pit_stops['LapNumber'], pit_stops['Time'] - pit_stops['PitInTime'], color='orange')
+                ax.set_ylabel("Time in Pit Lane")
+                st.write(f"Total Pit Stops: {len(pit_stops)}")
+            else:
+                st.warning("No pit stop data recorded for this driver.")
 
         ax.set_xlabel("Race Lap")
-        ax.set_ylabel("Laps on Current Set")
         ax.legend()
         st.pyplot(fig)
         
-        # Bonus: Show a small data table below
-        st.write("### Stint Summary Table")
-        st.dataframe(laps[['LapNumber', 'Stint', 'Compound', 'TyreLife']].tail(5))
+        # Display the raw data for the curious
+        with st.expander("View Raw Lap Data"):
+            st.dataframe(laps[['LapNumber', 'Stint', 'Compound', 'LapTime', 'TyreLife']])
+
 else:
-    st.info("Set your parameters in the sidebar and click 'Update Dashboard' to see the data.")
+    st.info("Choose your settings and click 'Run Analysis' to generate the visuals.")
