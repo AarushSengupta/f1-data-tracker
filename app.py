@@ -48,9 +48,24 @@ with st.sidebar:
     if drivers:
         colA, colB = st.columns(2)
         driver1 = colA.selectbox("Driver 1 (Base)", drivers, index=0)
-        # Auto-suggest teammate for Driver 2
-        teammate = session.results.pick_teammate(driver1)
-        t_code = teammate['Abbreviation'].iloc[0] if not teammate.empty else drivers[1]
+        
+        # --- SAFE TEAMMATE SEARCH ---
+        try:
+            # Find the team of Driver 1
+            d1_team = session.results.loc[session.results['Abbreviation'] == driver1, 'TeamName'].iloc[0]
+            
+            # Find everyone else on that same team
+            teammates = session.results.loc[
+                (session.results['TeamName'] == d1_team) & 
+                (session.results['Abbreviation'] != driver1), 
+                'Abbreviation'
+            ]
+            
+            # If a teammate is found, use them. If not, just pick the next driver in the list.
+            t_code = teammates.iloc[0] if not teammates.empty else drivers[1]
+        except:
+            t_code = drivers[1] # Fallback if results are missing
+            
         t_idx = drivers.index(t_code) if t_code in drivers else 1
         driver2 = colB.selectbox("Driver 2 (Rival)", drivers, index=t_idx)
     else:
