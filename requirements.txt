@@ -1,3 +1,4 @@
 fastf1
 matplotlib
 streamlit
+mplcyberpunk
