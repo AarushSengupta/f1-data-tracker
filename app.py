@@ -1,148 +1,170 @@
 import fastf1
-from fastf1 import plotting
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
-import mplcyberpunk
+import pandas as pd
 
 # 1. Page Configuration & Styling
-st.set_page_config(page_title="F1 Pro Telemetry", layout="wide")
-plt.style.use("cyberpunk")
-plotting.setup_mpl(misc_mpl_mods=False)
+st.set_page_config(page_title="F1 Pro Strategy Tool", layout="wide")
 
-# Helper function to convert raw seconds (e.g. 94.5) into M:SS.ms (e.g. 1:34.500)
+# Professional F1 Theme Colors
+F1_BG = '#0f0f0f' 
+F1_TEXT = '#FFFFFF'
+F1_GRID = '#333333'
+
+# Helper: Seconds -> M:SS.ms
 def format_lap_time(seconds):
-    if seconds is None or str(seconds) == 'nan':
+    if seconds is None or str(seconds) == 'nan' or seconds <= 0:
         return "N/A"
     minutes = int(seconds // 60)
     rem_seconds = seconds % 60
     return f"{minutes}:{rem_seconds:06.3f}"
 
-st.title("🏁 F1 Ultimate Analytics Dashboard")
+# Official F1 Tire Colors
+TIRE_COLORS = {'SOFT': '#FF0000', 'MEDIUM': '#FFFF00', 'HARD': '#FFFFFF', 
+               'INTERMEDIATE': '#00FF00', 'WET': '#0000FF'}
 
-# 2. Sidebar Controls
+st.title("🏁 F1 Ultimate Analytics & Strategy Dashboard")
+
+# 2. Sidebar Setup & Data Loading
 with st.sidebar:
     st.header("Race Settings")
-    year = st.selectbox("Select Year", [2026, 2025, 2024], index=1)
-    # Common F1 Tracks
-    race_list = ["Bahrain", "Saudi Arabia", "Australia", "Japan", "Miami", "Monaco", "Spain", "Canada", "Austria", "Silverstone", "Hungary", "Spa", "Monza"]
-    race = st.selectbox("Select Grand Prix", race_list)
+    year = st.selectbox("Year", [2026, 2025, 2024], index=1)
+    race_list = ["Bahrain", "Saudi Arabia", "Australia", "Japan", "Miami", "Monaco", "Spain", "Canada", "Silverstone", "Spa", "Monza"]
+    race = st.selectbox("Grand Prix", race_list)
     
-    # Logic to load the entry list for the dropdown
     @st.cache_data
-    def get_session_info(y, r):
+    def load_full_session(y, r):
         try:
             s = fastf1.get_session(y, r, 'R')
-            s.load(laps=True, telemetry=False, weather=False)
-            # Pull unique driver abbreviations from the results table
-            driver_list = sorted(s.results['Abbreviation'].unique().tolist())
-            return s, driver_list, None
+            s.load() 
+            d_list = sorted(s.results['Abbreviation'].unique().tolist())
+            return s, d_list, None
         except Exception as e:
             return None, [], str(e)
 
-    # Automatically fetch the drivers for the chosen race
-    session, drivers, err = get_session_info(year, race)
+    session, drivers, err = load_full_session(year, race)
     
     if drivers:
-        selected_driver = st.selectbox("Select Driver", drivers)
+        colA, colB = st.columns(2)
+        driver1 = colA.selectbox("Driver 1 (Base)", drivers, index=0)
+        # Auto-suggest teammate for Driver 2
+        teammate = session.results.pick_teammate(driver1)
+        t_code = teammate['Abbreviation'].iloc[0] if not teammate.empty else drivers[1]
+        t_idx = drivers.index(t_code) if t_code in drivers else 1
+        driver2 = colB.selectbox("Driver 2 (Rival)", drivers, index=t_idx)
     else:
-        selected_driver = st.text_input("Driver Initials (Manual)", "VER").upper()
+        driver1 = st.text_input("Driver 1", "VER").upper()
+        driver2 = st.text_input("Driver 2", "HAM").upper()
 
     st.markdown("---")
-    metric = st.selectbox("Choose Analysis View", 
-                         ["Tire Life & Strategy", "Race Pace (Lap Times)", "Pit Stop Performance"])
+    metric = st.selectbox("Analysis View", 
+                         ["Tire Life & Strategy", "Race Pace Comparison", "Pit Stop Performance", "Direct Pace Gap", "Weather Context"])
     
-    run_btn = st.button("Generate Dashboard", use_container_width=True)
+    run_btn = st.button("Update Dashboard", use_container_width=True)
 
-# 3. Main Logic Execution
+# 3. Graph Layout Styling
+plotly_layout = go.Layout(
+    paper_bgcolor=F1_BG, plot_bgcolor=F1_BG, font=dict(color=F1_TEXT),
+    xaxis=dict(gridcolor=F1_GRID, title='Race Lap', tickcolor=F1_TEXT),
+    yaxis=dict(gridcolor=F1_GRID, tickcolor=F1_TEXT),
+    hovermode='x unified', margin=dict(l=40, r=40, t=60, b=40),
+    legend=dict(bgcolor='rgba(0,0,0,0)', bordercolor=F1_TEXT, borderwidth=1)
+)
+
+# 4. Main App Logic
 if run_btn and session:
-    laps = session.laps.pick_driver(selected_driver)
+    laps1 = session.laps.pick_driver(driver1)
+    laps2 = session.laps.pick_driver(driver2)
     
-    if laps.empty:
-        st.warning(f"⚠️ No data found for {selected_driver} at {race} {year}. They may have DNF'd or didn't start.")
+    if laps1.empty or laps2.empty:
+        st.error("One of the selected drivers has no data for this race (DNS/DNF).")
     else:
-        # Create a professional dark figure
-        fig, ax = plt.subplots(figsize=(12, 6.5), facecolor='#0f0f0f')
-        ax.set_facecolor('#0f0f0f')
+        st.subheader(f"{metric}: {driver1} vs {driver2}")
 
         # --- VIEW 1: TIRE STRATEGY ---
         if metric == "Tire Life & Strategy":
-            for stint in laps['Stint'].unique():
-                stint_data = laps[laps['Stint'] == stint]
-                if not stint_data.empty:
-                    compound = stint_data['Compound'].iloc[0]
-                    color = {'SOFT': '#FF0000', 'MEDIUM': '#FFFF00', 'HARD': '#FFFFFF'}.get(compound, '#00FF00')
-                    
-                    ax.plot(stint_data['LapNumber'], stint_data['TyreLife'], color=color, linewidth=4, label=f"Stint {int(stint)} ({compound})")
-                    ax.fill_between(stint_data['LapNumber'], stint_data['TyreLife'], color=color, alpha=0.1)
-            
-            ax.set_ylabel("Laps on Current Tire Set", color='white')
-            ax.set_title(f"TIRE DEGRADATION PROFILE: {selected_driver}", color='white', fontsize=16, pad=20)
+            fig = go.Figure()
+            for d, l_data, sym in [(driver1, laps1, 'circle'), (driver2, laps2, 'diamond')]:
+                for stint in l_data['Stint'].unique():
+                    s_data = l_data[l_data['Stint'] == stint]
+                    if not s_data.empty:
+                        cmp = s_data['Compound'].iloc[0]
+                        color = TIRE_COLORS.get(cmp, '#808080')
+                        fig.add_trace(go.Scatter(
+                            x=s_data['LapNumber'], y=s_data['TyreLife'],
+                            name=f"{d}: Stint {int(stint)} ({cmp})",
+                            mode='markers+lines', marker=dict(color=color, symbol=sym, size=8),
+                            line=dict(width=1, dash='dot'),
+                            hovertemplate=f"{d} | Age: %{{y}} Laps<extra></extra>"
+                        ))
+            fig.update_layout(plotly_layout, yaxis_title="Laps on Set")
+            st.plotly_chart(fig, use_container_width=True)
 
         # --- VIEW 2: RACE PACE ---
-        elif metric == "Race Pace (Lap Times)":
-            quick = laps.pick_quicklaps()
-            if not quick.empty:
+        elif metric == "Race Pace Comparison":
+            fig = go.Figure()
+            for d, l_data, color in [(driver1, laps1, '#00FFFF'), (driver2, laps2, '#FF00FF')]:
+                quick = l_data.pick_quicklaps()
                 y_vals = quick['LapTime'].dt.total_seconds()
-                ax.plot(quick['LapNumber'], y_vals, color='#00FFFF', marker='o', markersize=3, linewidth=1, label="Raw Lap Time")
-                
-                # Trend Line (5-lap Rolling Average)
-                rolling = y_vals.rolling(window=5).mean()
-                ax.plot(quick['LapNumber'], rolling, color='#FF00FF', linewidth=3, label="Pace Trend")
-                
-                ax.set_ylabel("Lap Time (Seconds)", color='white')
-                ax.set_title(f"RACE PACE ANALYSIS: {selected_driver}", color='white', fontsize=16, pad=20)
-            else:
-                st.warning("Not enough clean laps to generate a pace chart.")
+                # Raw Laps
+                fig.add_trace(go.Scatter(x=quick['LapNumber'], y=y_vals, name=f"{d} Raw",
+                                         mode='markers', marker=dict(color=color, size=4), opacity=0.4))
+                # Trend Line
+                fig.add_trace(go.Scatter(x=quick['LapNumber'], y=y_vals.rolling(5).mean(), 
+                                         name=f"{d} Pace Trend", line=dict(color=color, width=3)))
+            fig.update_layout(plotly_layout, yaxis_title="Seconds", yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig, use_container_width=True)
 
         # --- VIEW 3: PIT STOPS ---
         elif metric == "Pit Stop Performance":
-            pits = laps[laps['PitInTime'].notna()]
-            if not pits.empty:
+            fig = go.Figure()
+            for d, l_data, color in [(driver1, laps1, '#FF8C00'), (driver2, laps2, '#CCCCCC')]:
+                pits = l_data[l_data['PitInTime'].notna()]
                 durations = (pits['Time'] - pits['PitInTime']).dt.total_seconds()
-                ax.bar(pits['LapNumber'], durations, color='#FF8C00', alpha=0.8, label="Pit Lane Time")
-                ax.set_ylabel("Seconds in Pit Lane", color='white')
-                ax.set_title(f"PIT STOP DURATIONS: {selected_driver}", color='white', fontsize=16, pad=20)
-            else:
-                st.warning("No pit stop data recorded for this driver.")
+                fig.add_trace(go.Bar(x=pits['LapNumber'], y=durations, name=f"{d} Pit Time", marker_color=color))
+            fig.update_layout(plotly_layout, yaxis_title="Seconds", barmode='group')
+            st.plotly_chart(fig, use_container_width=True)
 
-        # 4. Final Visual Polish
-        mplcyberpunk.add_glow_effects()
-        
-        # Legend De-duplication Fix
-        handles, labels = plt.gca().get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        if by_label:
-            ax.legend(by_label.values(), by_label.keys(), facecolor='#1a1a1a', edgecolor='white', loc='upper left')
+        # --- VIEW 4: DIRECT PACE GAP (The "Interval" Tracker) ---
+        elif metric == "Direct Pace Gap":
+            l1_sub = laps1[['LapNumber', 'Time']].copy()
+            l1_sub['Abs1'] = l1_sub['Time'].dt.total_seconds()
+            l2_sub = laps2[['LapNumber', 'Time']].copy()
+            l2_sub['Abs2'] = l2_sub['Time'].dt.total_seconds()
+            
+            merged = pd.merge(l1_sub, l2_sub, on='LapNumber')
+            merged['Gap'] = merged['Abs2'] - merged['Abs1'] # + means Driver 2 is behind
 
-        # Clean Borders & Grid
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.grid(color='#333333', linestyle='--', alpha=0.5)
-        ax.tick_params(colors='white')
-        
-        # Render Graph
-        st.pyplot(fig)
-        
-        # --- 5. KEY PERFORMANCE METRICS ---
-        st.markdown("### Race Highlights")
+            fig = go.Figure()
+            fig.add_shape(type="line", x0=merged['LapNumber'].min(), y0=0, x1=merged['LapNumber'].max(), y1=0,
+                          line=dict(color="white", width=2, dash="dash"))
+            fig.add_trace(go.Scatter(x=merged['LapNumber'], y=merged['Gap'], fill='tozeroy',
+                                     line=dict(color='#00FF00', width=4), name=f"Gap {driver2} to {driver1}"))
+            fig.update_layout(plotly_layout, yaxis_title="Gap (Seconds)", yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig, use_container_width=True)
+            st.info(f"📊 Up = {driver2} is closer/ahead. Down = {driver1} is pulling away.")
+
+        # --- VIEW 5: WEATHER ---
+        elif metric == "Weather Context":
+            weather = session.laps.get_weather_data()
+            weather['Min'] = weather['Time'].dt.total_seconds() / 60
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=weather['Min'], y=weather['TrackTemp'], name="Track Temp", line=dict(color='#00FFFF')))
+            fig.add_trace(go.Scatter(x=weather['Min'], y=weather['AirTemp'], name="Air Temp", line=dict(color='#FF00FF')))
+            fig.update_layout(plotly_layout, yaxis_title="Temp (°C)", xaxis_title="Race Minutes")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # 5. Bottom Metrics
+        st.markdown("---")
         c1, c2, c3 = st.columns(3)
-        
-        # Fastest Lap in M:SS.ms
-        f_lap_raw = laps['LapTime'].min().total_seconds()
-        c1.metric("Fastest Lap", format_lap_time(f_lap_raw))
-        
-        # Total Pit Stops
-        total_stints = int(laps['Stint'].max())
-        c2.metric("Pit Stops", total_stints - 1)
-        
-        # Average Quick Lap Pace in M:SS.ms
-        if not laps.pick_quicklaps().empty:
-            avg_pace_raw = laps.pick_quicklaps()['LapTime'].mean().total_seconds()
-            c3.metric("Avg Race Pace", format_lap_time(avg_pace_raw))
-        else:
-            c3.metric("Avg Race Pace", "N/A")
+        f1 = laps1['LapTime'].min().total_seconds()
+        f2 = laps2['LapTime'].min().total_seconds()
+        c1.metric(f"Fastest Lap ({driver1})", format_lap_time(f1))
+        c2.metric(f"Fastest Lap ({driver2})", format_lap_time(f2))
+        c3.metric("Lap Delta", f"{abs(f1-f2):.3f}s", f"{driver1 if f1 < f2 else driver2} faster")
 
 elif err:
-    st.error(f"Failed to load F1 Session: {err}")
+    st.error(f"Error: {err}")
 else:
-    st.info("👈 Select a race and driver in the sidebar, then click 'Generate Dashboard'.")
+    st.info("👈 Pick your drivers and click 'Update Dashboard' to see the telemetry.")
