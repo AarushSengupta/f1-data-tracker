@@ -4,3 +4,5 @@ streamlit
 mplcyberpunk
 pandas
 plotly
+numpy
+
